@@ -6,6 +6,7 @@ export default {
     orders: 'Orders',
     finance: 'Finance',
     demandForecast: 'Demand Forecast',
+    restocking: 'Restocking',
     companyName: 'Catalyst Components',
     subtitle: 'Inventory Management System'
   },
@@ -126,7 +127,60 @@ export default {
       status: 'Status',
       expectedDelivery: 'Expected Delivery',
       actualDelivery: 'Actual Delivery'
+    },
+    submitted: {
+      title: 'Submitted Orders',
+      description: 'Restocking orders submitted from the Restocking tab',
+      empty: 'No restocking orders submitted yet.',
+      leadTime: 'Lead Time',
+      leadTimeDays: '{days} days',
+      submittedDate: 'Submitted',
+      budget: 'Budget',
+      totalCost: 'Total Cost',
+      arrivesIn: 'Arrives in {days} days'
     }
+  },
+
+  // Restocking
+  restocking: {
+    title: 'Restocking',
+    description: 'Set a budget and order the most understocked forecast items',
+    budget: {
+      title: 'Available Budget',
+      label: 'Budget',
+      allocated: 'Allocated',
+      remaining: 'Remaining',
+      overBudget: 'Over budget by {amount}',
+      fullCoverage: 'Full coverage costs {amount}'
+    },
+    recommendations: {
+      title: 'Recommended Restock',
+      subtitle: 'Ranked by shortfall against forecasted demand',
+      empty: 'Increase the budget to see recommended items.',
+      noCandidates: 'All forecasted items are sufficiently stocked. Nothing to restock.',
+      itemsSelected: '{count} items',
+      reset: 'Reset to recommended',
+      coverage: 'Coverage'
+    },
+    table: {
+      sku: 'SKU',
+      item: 'Item',
+      category: 'Category',
+      forecast: 'Forecast',
+      onHand: 'On Hand',
+      shortfall: 'Shortfall',
+      unitCost: 'Unit Cost',
+      quantity: 'Order Qty',
+      lineTotal: 'Line Total',
+      leadTime: 'Lead Time',
+      actions: ''
+    },
+    placeOrder: 'Place Order',
+    placingOrder: 'Placing order...',
+    remove: 'Remove',
+    orderPlaced: 'Order {orderNumber} submitted. Expected delivery {date}.',
+    viewInOrders: 'View in Orders',
+    submitFailed: 'Failed to place order'
   },
 
   // Finance/Spending

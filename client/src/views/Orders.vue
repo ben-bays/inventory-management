@@ -29,6 +29,67 @@
 
       <div class="card">
         <div class="card-header">
+          <div>
+            <h3 class="card-title">
+              {{ t('orders.submitted.title') }} ({{ submittedOrders.length }})
+            </h3>
+            <p class="card-subtitle">{{ t('orders.submitted.description') }}</p>
+          </div>
+        </div>
+        <div v-if="submittedOrders.length === 0" class="empty-state">
+          {{ t('orders.submitted.empty') }}
+        </div>
+        <div v-else class="table-container">
+          <table class="submitted-table">
+            <thead>
+              <tr>
+                <th class="col-order-number">{{ t('orders.table.orderNumber') }}</th>
+                <th class="col-items">{{ t('orders.table.items') }}</th>
+                <th class="col-status">{{ t('orders.table.status') }}</th>
+                <th class="col-date">{{ t('orders.submitted.submittedDate') }}</th>
+                <th class="col-lead">{{ t('orders.submitted.leadTime') }}</th>
+                <th class="col-date">{{ t('orders.table.expectedDelivery') }}</th>
+                <th class="col-value">{{ t('orders.submitted.totalCost') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="order in submittedOrders" :key="order.id">
+                <td class="col-order-number"><strong>{{ order.order_number }}</strong></td>
+                <td class="col-items">
+                  <details class="items-details">
+                    <summary class="items-summary">
+                      {{ t('orders.itemsCount', { count: order.items.length }) }}
+                    </summary>
+                    <div class="items-dropdown">
+                      <div v-for="item in order.items" :key="item.sku" class="item-entry">
+                        <span class="item-name">{{ translateProductName(item.name) }}</span>
+                        <span class="item-meta">
+                          {{ t('orders.quantity') }}: {{ item.quantity }} @ {{ currencySymbol }}{{ formatAmount(item.unit_cost) }}
+                          &middot; {{ t('orders.submitted.leadTimeDays', { days: item.lead_time_days }) }}
+                        </span>
+                      </div>
+                    </div>
+                  </details>
+                </td>
+                <td class="col-status">
+                  <span class="badge info">{{ order.status }}</span>
+                </td>
+                <td class="col-date">{{ formatDate(order.submitted_date) }}</td>
+                <td class="col-lead">
+                  <strong>{{ t('orders.submitted.leadTimeDays', { days: order.lead_time_days }) }}</strong>
+                </td>
+                <td class="col-date">{{ formatDate(order.expected_delivery) }}</td>
+                <td class="col-value">
+                  <strong>{{ currencySymbol }}{{ formatAmount(order.total_cost) }}</strong>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
           <h3 class="card-title">{{ t('orders.allOrders') }} ({{ orders.length }})</h3>
         </div>
         <div class="table-container">
@@ -95,6 +156,7 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const submittedOrders = ref([])
 
     // Use shared filters
     const {
@@ -109,7 +171,13 @@ export default {
       try {
         loading.value = true
         const filters = getCurrentFilters()
-        const fetchedOrders = await api.getOrders(filters)
+        const [fetchedOrders, fetchedRestockOrders] = await Promise.all([
+          api.getOrders(filters),
+          api.getRestockOrders()
+        ])
+
+        // Restocking orders are unfiltered - they arrive already sorted newest first
+        submittedOrders.value = fetchedRestockOrders
 
         // Sort orders by order_date (earliest first)
         orders.value = fetchedOrders.sort((a, b) => {
@@ -143,6 +211,13 @@ export default {
       return statusMap[status] || 'info'
     }
 
+    const formatAmount = (value) => {
+      return (Number(value) || 0).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })
+    }
+
     const formatDate = (dateString) => {
       const { currentLocale } = useI18n()
       const locale = currentLocale.value === 'ja' ? 'ja-JP' : 'en-US'
@@ -160,9 +235,11 @@ export default {
       loading,
       error,
       orders,
+      submittedOrders,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
+      formatAmount,
       currencySymbol,
       translateProductName,
       translateCustomerName
@@ -173,9 +250,26 @@ export default {
 
 <style scoped>
 /* Fixed table layout to prevent column shifting */
-.orders-table {
+.orders-table,
+.submitted-table {
   table-layout: fixed;
   width: 100%;
+}
+
+.card-subtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.813rem;
+  color: #64748b;
+}
+
+.empty-state {
+  padding: 2rem;
+  text-align: center;
+  color: #64748b;
+}
+
+.col-lead {
+  width: 110px;
 }
 
 /* Column widths */

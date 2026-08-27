@@ -1,10 +1,21 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
+from datetime import datetime, timedelta
 from pydantic import BaseModel
-from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders, restock_orders
 
 app = FastAPI(title="Factory Inventory Management System")
+
+# Supplier lead time in days, by inventory category
+LEAD_TIME_BY_CATEGORY = {
+    'Circuit Boards': 21,
+    'Sensors': 14,
+    'Controllers': 28,
+    'Power Supplies': 18,
+    'Actuators': 30
+}
+DEFAULT_LEAD_TIME_DAYS = 21
 
 # Quarter mapping for date filtering
 QUARTER_MAP = {
@@ -89,6 +100,9 @@ class DemandForecast(BaseModel):
     forecasted_demand: int
     trend: str
     period: str
+    category: Optional[str] = None
+    unit_cost: Optional[float] = None
+    quantity_on_hand: Optional[int] = None
 
 class BacklogItem(BaseModel):
     id: str
@@ -119,6 +133,45 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockCandidate(BaseModel):
+    """A forecasted item that is understocked and eligible for restocking"""
+    id: str
+    sku: str
+    name: str
+    category: str
+    trend: str
+    period: str
+    forecasted_demand: int
+    quantity_on_hand: int
+    shortfall: int
+    unit_cost: float
+    lead_time_days: int
+    full_coverage_cost: float
+
+class RestockOrderItem(BaseModel):
+    sku: str
+    name: str
+    category: str
+    quantity: int
+    unit_cost: float
+    line_total: float
+    lead_time_days: int
+
+class RestockOrder(BaseModel):
+    id: str
+    order_number: str
+    status: str
+    submitted_date: str
+    budget: float
+    total_cost: float
+    lead_time_days: int
+    expected_delivery: str
+    items: List[RestockOrderItem]
+
+class CreateRestockOrderRequest(BaseModel):
+    budget: float
+    items: List[dict]
 
 # API endpoints
 @app.get("/")
@@ -303,6 +356,120 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+def get_lead_time_days(category: Optional[str]) -> int:
+    """Look up supplier lead time for a category, falling back to the default"""
+    return LEAD_TIME_BY_CATEGORY.get(category or '', DEFAULT_LEAD_TIME_DAYS)
+
+def build_restock_candidates() -> list:
+    """Build the restock candidate list from demand forecasts.
+
+    On-hand quantity and unit cost prefer live inventory data when the forecast
+    SKU exists there, and fall back to the values on the forecast record.
+    Items already stocked at or above forecasted demand are excluded.
+    """
+    candidates = []
+
+    for forecast in demand_forecasts:
+        sku = forecast['item_sku']
+        stocked = [item for item in inventory_items if item['sku'] == sku]
+
+        if stocked:
+            quantity_on_hand = sum(item['quantity_on_hand'] for item in stocked)
+            unit_cost = stocked[0]['unit_cost']
+            category = stocked[0]['category']
+        else:
+            quantity_on_hand = forecast.get('quantity_on_hand', 0)
+            unit_cost = forecast.get('unit_cost', 0)
+            category = forecast.get('category', '')
+
+        shortfall = forecast['forecasted_demand'] - quantity_on_hand
+        if shortfall <= 0 or unit_cost <= 0:
+            continue
+
+        candidates.append({
+            'id': forecast['id'],
+            'sku': sku,
+            'name': forecast['item_name'],
+            'category': category,
+            'trend': forecast['trend'],
+            'period': forecast['period'],
+            'forecasted_demand': forecast['forecasted_demand'],
+            'quantity_on_hand': quantity_on_hand,
+            'shortfall': shortfall,
+            'unit_cost': unit_cost,
+            'lead_time_days': get_lead_time_days(category),
+            'full_coverage_cost': round(shortfall * unit_cost, 2)
+        })
+
+    # Largest shortfall first - the most understocked items get funded first
+    candidates.sort(key=lambda c: c['shortfall'], reverse=True)
+    return candidates
+
+@app.get("/api/restock/candidates", response_model=List[RestockCandidate])
+def get_restock_candidates():
+    """Get understocked forecast items eligible for restocking, worst shortfall first"""
+    return build_restock_candidates()
+
+@app.get("/api/restock-orders", response_model=List[RestockOrder])
+def get_restock_orders():
+    """Get all submitted restocking orders, newest first"""
+    # Tie-break on id - submitted_date is second-resolution, so two orders
+    # placed in the same second would otherwise keep their insertion order
+    return sorted(restock_orders, key=lambda o: (o['submitted_date'], int(o['id'])), reverse=True)
+
+@app.post("/api/restock-orders", response_model=RestockOrder, status_code=201)
+def create_restock_order(request: CreateRestockOrderRequest):
+    """Submit a restocking order for the given items"""
+    if not request.items:
+        raise HTTPException(status_code=400, detail="A restocking order must contain at least one item")
+
+    candidates_by_sku = {c['sku']: c for c in build_restock_candidates()}
+    submitted_at = datetime.now()
+    order_items = []
+
+    for requested in request.items:
+        sku = requested.get('sku')
+        candidate = candidates_by_sku.get(sku)
+        if not candidate:
+            raise HTTPException(status_code=400, detail=f"'{sku}' is not a valid restock candidate")
+
+        try:
+            quantity = int(requested.get('quantity', 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Invalid quantity for '{sku}'")
+
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail=f"Quantity for '{sku}' must be greater than zero")
+
+        # Price and lead time come from the server, never from the client
+        order_items.append({
+            'sku': sku,
+            'name': candidate['name'],
+            'category': candidate['category'],
+            'quantity': quantity,
+            'unit_cost': candidate['unit_cost'],
+            'line_total': round(quantity * candidate['unit_cost'], 2),
+            'lead_time_days': candidate['lead_time_days']
+        })
+
+    # The order is complete only when its slowest item arrives
+    lead_time_days = max(item['lead_time_days'] for item in order_items)
+
+    order = {
+        'id': str(len(restock_orders) + 1),
+        'order_number': f"RSO-{submitted_at.year}-{len(restock_orders) + 1:04d}",
+        'status': 'Submitted',
+        'submitted_date': submitted_at.isoformat(timespec='seconds'),
+        'budget': round(request.budget, 2),
+        'total_cost': round(sum(item['line_total'] for item in order_items), 2),
+        'lead_time_days': lead_time_days,
+        'expected_delivery': (submitted_at + timedelta(days=lead_time_days)).isoformat(timespec='seconds'),
+        'items': order_items
+    }
+
+    restock_orders.append(order)
+    return order
 
 if __name__ == "__main__":
     import uvicorn
